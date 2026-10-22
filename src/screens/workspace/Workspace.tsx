@@ -73,6 +73,7 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
   const [pendingMark, setPendingMark] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [toast, setToast] = useState<{ text: string; undo?: boolean } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
   const timer = useRef<number | null>(null);
 
   // Reset transient UI when switching rooms.
@@ -346,7 +347,8 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
         redoLabel={store.redoLabel}
         dirty={store.dirty}
         onHome={() => {
-          if (!store.dirty || confirm('Leave without saving? Your unsaved changes will be lost.')) onHome();
+          if (store.dirty) setLeaving(true);
+          else onHome();
         }}
         onRename={store.rename}
         onUndo={undo}
@@ -584,6 +586,39 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
           }}
         />
       )}
+      <Dialog
+        open={leaving}
+        onClose={() => setLeaving(false)}
+        title="Leave without saving?"
+        size="sm"
+        footer={
+          <>
+            <button className="btn" onClick={() => setLeaving(false)}>
+              Stay
+            </button>
+            <button className="btn" onClick={() => (setLeaving(false), onHome())}>
+              Leave
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                try {
+                  store.save();
+                  setLeaving(false);
+                  onHome();
+                } catch (e) {
+                  setLeaving(false);
+                  setSaveError((e as Error).message);
+                }
+              }}
+            >
+              Save and leave
+            </button>
+          </>
+        }
+      >
+        <p>Your unsaved changes will be lost if you leave now.</p>
+      </Dialog>
       {pendingMark && <MarkDialog taken={room.marks.map((m) => m.category)} onCancel={() => setPendingMark(null)} onSave={finishMark} />}
     </div>
   );

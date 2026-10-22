@@ -99,9 +99,6 @@ export function ShoppingListDialog({ open, onClose, project, onToggleDecor }: { 
           >
             {copied ? 'Copied' : 'Copy as text'}
           </button>
-          <button className="btn btn-sm" onClick={() => window.print()}>
-            Print
-          </button>
         </>
       }
     >

@@ -21,6 +21,7 @@ export function Home({
   const input = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [projects, setProjects] = useState<ProjectMeta[]>(() => listProjects());
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   return (
     <main className="home">
@@ -105,18 +106,28 @@ export function Home({
                     {p.rooms} {p.rooms === 1 ? 'room' : 'rooms'} · saved {formatTime(p.updatedAt)}
                   </span>
                 </button>
-                <button
-                  className="icon-btn"
-                  aria-label={`Delete ${p.name}`}
-                  onClick={() => {
-                    if (confirm(`Delete “${p.name}”? This can't be undone.`)) {
-                      deleteProject(p.id);
-                      setProjects(listProjects());
-                    }
-                  }}
-                >
-                  <Icon name="trash" size={16} />
-                </button>
+                {confirmDelete === p.id ? (
+                  <span className="confirm-row">
+                    <span className="small">Delete?</span>
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => {
+                        deleteProject(p.id);
+                        setProjects(listProjects());
+                        setConfirmDelete(null);
+                      }}
+                    >
+                      Delete
+                    </button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setConfirmDelete(null)}>
+                      Keep
+                    </button>
+                  </span>
+                ) : (
+                  <button className="icon-btn" aria-label={`Delete ${p.name}`} onClick={() => setConfirmDelete(p.id)}>
+                    <Icon name="trash" size={16} />
+                  </button>
+                )}
               </li>
             ))}
           </ul>
