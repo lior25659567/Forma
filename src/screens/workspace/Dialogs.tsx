@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { aiStatus, type AiStatus } from '../../ai/client';
 import { getCatalogInfo, getProduct, parseCatalogFeed, resetCatalog, setImportedCatalog } from '../../catalog/catalog';
 import { RETAILERS } from '../../catalog/retailers';
 import { formatIls, formatTime } from '../../lib/format';
@@ -193,6 +194,10 @@ export function HistoryDialog({ open, onClose, project, onRestore }: { open: boo
 
 export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const file = useRef<HTMLInputElement>(null);
+  const [ai, setAi] = useState<AiStatus>({ available: false, model: null });
+  useEffect(() => {
+    if (open) aiStatus().then(setAi);
+  }, [open]);
   const [msg, setMsg] = useState<string | null>(null);
   const [, force] = useState(0);
   const info = getCatalogInfo();
@@ -218,8 +223,20 @@ export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => v
           <tr>
             <th>Uploaded photos</th>
             <td>
-              Whole-room redesign isn’t available (no image-generation service is connected). You can mark furniture on your photo; previews are
-              a rough overlay drawn into the area you marked. Matching uses the colour sampled from your photo and the width you enter.
+              {ai.available ? (
+                <>
+                  <b>Image generation is on</b> ({ai.model}, via Cloudflare Workers AI on the Forma server). New directions are generated from
+                  your photo; product previews regenerate only the area around the piece you marked, using the product’s photo (or its
+                  illustration for sample listings). Results are visualizations: walls and windows can drift, and products can look slightly
+                  different from the real thing.
+                </>
+              ) : (
+                <>
+                  Image generation isn’t available here (no Forma server with an API key). You can mark furniture on your photo; previews are a
+                  rough overlay drawn into the area you marked.
+                </>
+              )}{' '}
+              Matching uses the colour read from the image and the width you enter.
             </td>
           </tr>
           <tr>

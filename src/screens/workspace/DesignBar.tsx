@@ -77,7 +77,7 @@ export function DesignBar({
             )}
           </div>
         )}
-        <button className="btn btn-sm" onClick={onNew} disabled={!canGenerate} title={canGenerate ? undefined : 'Needs an image-generation service for uploaded photos'}>
+        <button className="btn btn-sm" onClick={onNew} disabled={!canGenerate} title={canGenerate ? undefined : 'Redesigning a photo needs the image-generation server, which isn’t available here'}>
           <Icon name="sparkle" size={16} /> New direction
         </button>
       </div>

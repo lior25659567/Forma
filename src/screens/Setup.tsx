@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { aiStatus } from '../ai/client';
 import { STYLES } from '../design/styles';
 import type { Category, Preferences, Room, RoomDims, StyleId } from '../types';
 import { CATEGORY_LABEL } from '../types';
@@ -48,6 +49,10 @@ export function Setup({ room, open, onCancel, onDone }: { room: Room; open: bool
   const original = room.designs.find((d) => d.style === 'original');
   const keepable = (Object.keys(original?.items ?? {}) as Category[]).filter(() => isSample);
   const budgetOk = budget >= 1000;
+  const [aiOn, setAiOn] = useState(false);
+  useEffect(() => {
+    aiStatus().then((s) => setAiOn(s.available));
+  }, []);
 
   const finish = () =>
     onDone({
@@ -164,12 +169,18 @@ export function Setup({ room, open, onCancel, onDone }: { room: Room; open: bool
             </fieldset>
           )}
 
-          {!isSample && (
-            <p className="notice">
-              Whole-room redesign of uploaded photos needs an image-generation service, which isn’t connected in this build. You can still mark
-              your sofa on the photo, browse alternatives and preview them as a rough overlay.
-            </p>
-          )}
+          {!isSample &&
+            (aiOn ? (
+              <p className="notice notice-info">
+                Your photo opens as it is. Use <b>New direction</b> to generate redesigns of it (about 10–30 seconds each), and mark your sofa to
+                find and preview real alternatives.
+              </p>
+            ) : (
+              <p className="notice">
+                Redesigning an uploaded photo needs the image-generation server, which isn’t available here. You can still mark your sofa on the
+                photo, browse alternatives and preview them as a rough overlay.
+              </p>
+            ))}
         </div>
       )}
     </Dialog>

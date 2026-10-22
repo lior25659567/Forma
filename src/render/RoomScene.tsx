@@ -484,7 +484,8 @@ export function RoomScene({ room, design, photoUrl, override, idPrefix, interact
         {photoUrl ? <image href={photoUrl} x={0} y={0} width={width} height={height} preserveAspectRatio="none" /> : <rect width={width} height={height} fill="#ddd" />}
         {marks.map((m) => {
           const s = shapeFor(design, m.category, override);
-          const replaced = (override && override.category === m.category) || design.items[m.category]?.source.type === 'product';
+          const it = design.items[m.category];
+          const replaced = (override && override.category === m.category) || (it?.source.type === 'product' && !it.inImage);
           return replaced && s ? <PhotoOverlay key={`ov-${m.id}`} ctx={ctx} mark={m} shape={s} width={width} height={height} /> : null;
         })}
         {marks.map((m) => {

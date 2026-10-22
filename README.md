@@ -11,6 +11,32 @@ npm test           # logic tests (budget, matching, catalog, generation)
 npm run build
 ```
 
+## Image generation (Cloudflare Workers AI)
+
+Uploaded photos can be redesigned with a real image model, and product previews are generated into
+the photo. The API token stays on the server; the browser only talks to `/api/ai/*`.
+
+Run it on your computer:
+
+```
+cp .env.example .env      # then fill in CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN
+npm install
+npm run dev               # open http://localhost:5173 and upload a room photo
+```
+
+- **New direction** on a photo sends the photo plus a style brief (furniture, palette, lighting,
+  and what must not change) to the model and returns 3 versions. Versions whose walls/windows seem
+  to have moved get a warning.
+- **Preview in room** crops the area around the piece you marked, sends it with the product's
+  photo (or its illustration for sample listings), and pastes the result back only around that
+  piece, so the rest of the photo is unchanged. If generation fails you can retry or use the quick
+  overlay.
+- Default model `@cf/black-forest-labs/flux-2-klein-4b`; set `RESTYLE_MODEL` to change it.
+- Deploy as a Cloudflare Worker: `npm run build && npx wrangler deploy`, then
+  `npx wrangler secret put CLOUDFLARE_ACCOUNT_ID` and `... CLOUDFLARE_API_TOKEN`.
+- Static hosting (or the shared single-file page) has no server, so generation is off there and the
+  app falls back to the overlay preview.
+
 ## The main flow
 
 Upload room (or try the sample) → choose style and budget → 3 design directions are generated →

@@ -3,9 +3,17 @@ import { RoomScene, sceneSize, useSceneLayout, type Interaction, type SceneOverr
 import type { Category, Design, Room } from '../../types';
 import { CATEGORY_LABEL } from '../../types';
 
+export interface CompareSide {
+  design: Design;
+  override?: SceneOverride | null;
+  label: string;
+  /** Image to show for photo rooms (generated design or preview); defaults to the room photo. */
+  photoUrl?: string | null;
+}
+
 export interface CompareSpec {
-  before: { design: Design; override?: SceneOverride | null; label: string };
-  after: { design: Design; override?: SceneOverride | null; label: string };
+  before: CompareSide;
+  after: CompareSide;
 }
 
 export interface CanvasProps {
@@ -15,7 +23,8 @@ export interface CanvasProps {
   override: SceneOverride | null;
   compare: CompareSpec | null;
   interaction: Interaction | null;
-  progress: { category: Category; value: number; onCancel: () => void } | null;
+  /** value = percent, or null for an open-ended job (then `seconds` is shown). */
+  progress: { category: Category; value: number | null; seconds?: number; label?: string; onCancel: () => void } | null;
   marking: boolean;
   onMarked: (rect: { x: number; y: number; w: number; h: number }) => void;
   children?: ReactNode;
@@ -76,9 +85,9 @@ export function Canvas(props: CanvasProps) {
       <div className="frame" style={{ width: `min(100cqw, calc(100cqh * ${ratio}))`, aspectRatio: `${width} / ${height}` }}>
         {compare ? (
           <>
-            <RoomScene room={room} design={compare.after.design} override={compare.after.override} photoUrl={photoUrl} idPrefix="cmpA" className="scene" title={compare.after.label} />
+            <RoomScene room={room} design={compare.after.design} override={compare.after.override} photoUrl={compare.after.photoUrl ?? photoUrl} idPrefix="cmpA" className="scene" title={compare.after.label} />
             <div className="compare-before" style={{ clipPath: `inset(0 ${100 - pos}% 0 0)` }}>
-              <RoomScene room={room} design={compare.before.design} override={compare.before.override} photoUrl={photoUrl} idPrefix="cmpB" className="scene" title={compare.before.label} />
+              <RoomScene room={room} design={compare.before.design} override={compare.before.override} photoUrl={compare.before.photoUrl ?? photoUrl} idPrefix="cmpB" className="scene" title={compare.before.label} />
             </div>
             <div className="compare-line" style={{ left: `${pos}%` }} aria-hidden="true">
               <span />
@@ -123,7 +132,7 @@ export function Canvas(props: CanvasProps) {
             onClick={(e) => e.stopPropagation()}
           >
             <span className="spinner" aria-hidden="true" />
-            Rendering preview… {Math.round(progress.value)}%
+            {progress.label ?? 'Rendering preview'}… {progress.value != null ? `${Math.round(progress.value)}%` : `${progress.seconds ?? 0}s`}
             <button className="link-btn" onClick={progress.onCancel}>
               Cancel
             </button>

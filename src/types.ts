@@ -144,6 +144,8 @@ export interface PlacedItem<C extends Category = Category> {
   category: C;
   shape: ShapeFor<C>;
   source: ItemSource;
+  /** True when this piece is already part of a generated room image (no overlay needed). */
+  inImage?: boolean;
 }
 
 export interface Decor {
@@ -178,6 +180,12 @@ export interface Design {
   wallColor: string | null; // null = keep the room's wall colour
   floor: FloorFinish | null; // null = keep the room's floor
   inspiration?: { strength: number; colors: string[] };
+  /** Generated room image (IndexedDB id). When set, this replaces the room photo for this design. */
+  imageId?: string;
+  /** Model that produced imageId, shown to the user. */
+  imageModel?: string;
+  /** 0..1 similarity of walls/windows to the original photo; low values get a warning. */
+  structureScore?: number;
 }
 
 export type FloorFinish = { type: 'oak' | 'walnut' | 'concrete' | 'terracotta' | 'whitewash'; color: string };

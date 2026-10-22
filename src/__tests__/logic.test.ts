@@ -185,3 +185,19 @@ describe('catalog', () => {
     expect(errors).toHaveLength(2);
   });
 });
+
+describe('image prompts', () => {
+  it('describes the direction, protects the architecture and reads naturally', async () => {
+    const { restylePrompt } = await import('../ai/prompts');
+    const room = sampleRoom();
+    for (const s of STYLES) {
+      for (const v of [0, 1, 2]) {
+        const p = restylePrompt(s.id, generateDesign(room, s.id, v), room.preferences, ['sofa']);
+        expect(p).toMatch(/Keep exactly the same camera position/);
+        expect(p).toMatch(/flooring/);
+        expect(p).not.toMatch(/\ba [aeiou]/i);
+        expect(p).not.toMatch(/plant plant/);
+      }
+    }
+  });
+});

@@ -18,11 +18,24 @@ import { DesignBar, DirectionsDialog, type DirectionRequest } from './DesignBar'
 import { AboutDialog, HistoryDialog, ShoppingListDialog } from './Dialogs';
 import { ItemPanel } from './ItemPanel';
 import { sampleMark } from './sampling';
+import { aiStatus, type AiStatus } from '../../ai/client';
+import { aiReplace, aiRestyle } from '../../ai/flows';
+import { putImage } from '../../state/storage';
+import { uid } from '../../lib/id';
 
 type Preview =
-  | { status: 'generating'; category: Category; product: Product; variantId: string; progress: number }
-  | { status: 'ready'; category: Category; product: Product; variantId: string; shape: ItemShape }
-  | { status: 'failed'; category: Category; product: Product; variantId: string; reason: string };
+  | { status: 'generating'; kind: 'render' | 'ai'; category: Category; product: Product; variantId: string; progress: number | null; startedAt: number }
+  | { status: 'ready'; kind: 'render'; category: Category; product: Product; variantId: string; shape: ItemShape }
+  | { status: 'ready'; kind: 'ai'; category: Category; product: Product; variantId: string; shape: ItemShape; imageUrl: string; blob: Blob; model: string; referenceIsPhoto: boolean }
+  | { status: 'failed'; kind: 'render' | 'ai'; category: Category; product: Product; variantId: string; reason: string };
+
+interface RestyleJob {
+  style: string;
+  total: number;
+  done: number;
+  startedAt: number;
+  error: string | null;
+}
 
 /** Shape standing in for a piece on an uploaded photo: only colour and (optional) width are known. */
 function photoTarget(m: Mark): ItemShape {
@@ -75,6 +88,25 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
   const [saveError, setSaveError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const timer = useRef<number | null>(null);
+  const aiAbort = useRef<AbortController | null>(null);
+  const restyleAbort = useRef<AbortController | null>(null);
+  const [ai, setAi] = useState<AiStatus>({ available: false, model: null });
+  const [images, setImages] = useState<Record<string, string>>({});
+  const [restyle, setRestyle] = useState<RestyleJob | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [targetColor, setTargetColor] = useState<string | null>(null);
+
+  useEffect(() => {
+    aiStatus().then(setAi);
+  }, []);
+
+  // Tick while a generation job runs, for the elapsed-time readout.
+  const busyAi = preview?.status === 'generating' && preview.kind === 'ai';
+  useEffect(() => {
+    if (!busyAi && !(restyle && restyle.done < restyle.total && !restyle.error)) return;
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, [busyAi, restyle]);
 
   // Reset transient UI when switching rooms.
   useEffect(() => {
@@ -86,6 +118,8 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
     setCompareId(null);
     setMarking(false);
     setPhotoUrl(null);
+    setRestyle(null);
+    restyleAbort.current?.abort();
     if (room.source.kind === 'photo') getImage(room.source.imageId).then(setPhotoUrl);
   }, [room.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -104,6 +138,23 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
     return () => window.removeEventListener('beforeunload', fn);
   }, [store.dirty]);
 
+  // Load generated design images (stored in IndexedDB) for this room and any candidates.
+  useEffect(() => {
+    const ids = [...room.designs, ...candidates].map((d) => d.imageId).filter((x): x is string => !!x && !images[x]);
+    if (!ids.length) return;
+    let alive = true;
+    Promise.all(ids.map(async (id) => [id, await getImage(id)] as const)).then((pairs) => {
+      if (!alive) return;
+      const found = pairs.filter((x): x is readonly [string, string] => !!x[1]);
+      setImages((m) => ({ ...m, ...Object.fromEntries(found) }));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [room.designs, candidates, images]);
+
+  const imageFor = (d: Design | null | undefined): string | null => (d?.imageId ? images[d.imageId] : undefined) || photoUrl;
+
   const updateRoom = useCallback((label: string, fn: (r: Room) => Room) => store.updateRoom(room.id, label, fn), [store, room.id]);
   const updateDesign = useCallback(
     (label: string, fn: (d: Design) => Design) => updateRoom(label, (r) => ({ ...r, designs: r.designs.map((d) => (d.id === r.activeDesignId ? fn(d) : d)) })),
@@ -120,17 +171,41 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
 
   const cancelPreview = useCallback(() => {
     stopTimer();
+    aiAbort.current?.abort();
+    aiAbort.current = null;
     setPreview(null);
     setPreviewCompare(false);
   }, []);
 
-  const startPreview = (product: Product, variantId: string) => {
+  const startPreview = (product: Product, variantId: string, forceRender = false) => {
     if (!selected) return;
     stopTimer();
+    aiAbort.current?.abort();
     const category = selected;
     setPreviewCompare(false);
-    setPreview({ status: 'generating', category, product, variantId, progress: 0 });
     const res = productShape(product, variantId);
+    const mark = room.marks.find((m) => m.category === category);
+    const base = imageFor(design);
+    if (ai.available && isPhoto && mark && base && !forceRender) {
+      if (!res.ok) {
+        setPreview({ status: 'failed', kind: 'ai', category, product, variantId, reason: res.reason });
+        return;
+      }
+      const ac = new AbortController();
+      aiAbort.current = ac;
+      setPreview({ status: 'generating', kind: 'ai', category, product, variantId, progress: null, startedAt: Date.now() });
+      aiReplace({ baseUrl: base, mark, category, product, shape: res.shape, signal: ac.signal })
+        .then((r) => {
+          if (ac.signal.aborted) return;
+          setPreview({ status: 'ready', kind: 'ai', category, product, variantId, shape: res.shape, imageUrl: r.url, blob: r.blob, model: r.model, referenceIsPhoto: r.referenceIsPhoto });
+        })
+        .catch((e: Error) => {
+          if (ac.signal.aborted || e.name === 'AbortError') return;
+          setPreview({ status: 'failed', kind: 'ai', category, product, variantId, reason: e.message });
+        });
+      return;
+    }
+    setPreview({ status: 'generating', kind: 'render', category, product, variantId, progress: 0, startedAt: Date.now() });
     const current = design.items[category]?.shape;
     let progress = 0;
     timer.current = window.setInterval(() => {
@@ -141,22 +216,34 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
       }
       stopTimer();
       if (!res.ok) {
-        setPreview({ status: 'failed', category, product, variantId, reason: res.reason });
+        setPreview({ status: 'failed', kind: 'render', category, product, variantId, reason: res.reason });
       } else if (current && JSON.stringify(current) === JSON.stringify(res.shape) && !isPhoto) {
-        setPreview({ status: 'failed', category, product, variantId, reason: 'It would look identical to what’s already in your room.' });
+        setPreview({ status: 'failed', kind: 'render', category, product, variantId, reason: 'It would look identical to what’s already in your room.' });
       } else {
-        setPreview({ status: 'ready', category, product, variantId, shape: res.shape });
+        setPreview({ status: 'ready', kind: 'render', category, product, variantId, shape: res.shape });
       }
     }, 90);
   };
 
-  const applyPreview = () => {
+  const applyPreview = async () => {
     if (!preview || preview.status !== 'ready') return;
     const { category, product, variantId, shape } = preview;
-    updateDesign(`Applied ${product.name}`, (d) => ({
-      ...d,
-      items: { ...d.items, [category]: { category, shape, source: { type: 'product', productId: product.id, variantId } } as PlacedItem },
-    }));
+    if (preview.kind === 'ai') {
+      const imageId = uid('img');
+      const url = await putImage(imageId, preview.blob);
+      setImages((m) => ({ ...m, [imageId]: url }));
+      updateDesign(`Applied ${product.name}`, (d) => ({
+        ...d,
+        imageId,
+        imageModel: preview.model,
+        items: { ...d.items, [category]: { category, shape, source: { type: 'product', productId: product.id, variantId }, inImage: true } as PlacedItem },
+      }));
+    } else {
+      updateDesign(`Applied ${product.name}`, (d) => ({
+        ...d,
+        items: { ...d.items, [category]: { category, shape, source: { type: 'product', productId: product.id, variantId } } as PlacedItem },
+      }));
+    }
     cancelPreview();
     setToast({ text: `Applied ${product.name}.`, undo: true });
   };
@@ -212,19 +299,34 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
   const viewing = candidates.find((d) => d.id === viewingId) ?? null;
   const shown = viewing ?? design;
   const selectable: Category[] = isPhoto ? room.marks.map((m) => m.category) : CATEGORIES.filter((c) => shown.items[c]);
-  const override: SceneOverride | null = preview?.status === 'ready' ? { category: preview.category, shape: preview.shape } : null;
+  const override: SceneOverride | null = preview?.status === 'ready' && preview.kind === 'render' ? { category: preview.category, shape: preview.shape } : null;
+  const previewImage = preview?.status === 'ready' && preview.kind === 'ai' ? preview.imageUrl : null;
+  const currentImage = imageFor(design);
+  const shownImage = viewing ? imageFor(viewing) : (previewImage ?? currentImage);
 
   const compare: CompareSpec | null = useMemo(() => {
     if (preview?.status === 'ready' && previewCompare) {
-      return { before: { design, label: 'Before' }, after: { design, override, label: 'After' } };
+      return { before: { design, label: 'Before', photoUrl: currentImage }, after: { design, override, label: 'After', photoUrl: previewImage ?? currentImage } };
     }
     const other = room.designs.find((d) => d.id === compareId);
-    if (other && !viewing) return { before: { design, label: design.name }, after: { design: other, label: other.name } };
+    if (other && !viewing) return { before: { design, label: design.name, photoUrl: currentImage }, after: { design: other, label: other.name, photoUrl: imageFor(other) } };
     return null;
-  }, [preview, previewCompare, design, override, room.designs, compareId, viewing]);
+  }, [preview, previewCompare, design, override, room.designs, compareId, viewing, currentImage, previewImage, images]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const interactive = !compare && !viewing && !marking;
   const summary = summarize(design, room.budget);
+
+  // On photos, read the selected piece's colour from the image currently shown (it changes after a restyle).
+  useEffect(() => {
+    setTargetColor(null);
+    const mark = room.marks.find((m) => m.category === selected);
+    if (!isPhoto || !mark || !currentImage) return;
+    let alive = true;
+    sampleMark(currentImage, mark.rect).then((c) => alive && setTargetColor(c.color)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [isPhoto, selected, currentImage, room.marks]);
 
   const panelData = useMemo(() => {
     if (!selected || viewing) return null;
@@ -233,7 +335,7 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
     let target: ItemShape | null = item?.shape ?? null;
     let partial: { knownWidth: boolean } | null = null;
     if (isPhoto && mark && item?.source.type !== 'product') {
-      target = photoTarget(mark);
+      target = photoTarget(targetColor ? { ...mark, color: targetColor } : mark);
       partial = { knownWidth: mark.currentWidthCm != null };
     }
     if (!target) return null;
@@ -244,18 +346,52 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
       line: item ? lineFor(item as PlacedItem) : null,
       currentProductId: item?.source.type === 'product' ? item.source.productId : null,
     };
-  }, [selected, viewing, design, room, isPhoto]);
+  }, [selected, viewing, design, room, isPhoto, targetColor]);
 
   // ---- Actions ----
 
   const generateDirections = (req: DirectionRequest) => {
     setDialog(null);
+    if (isPhoto) {
+      if (!photoUrl) return;
+      restyleAbort.current?.abort();
+      const ac = new AbortController();
+      restyleAbort.current = ac;
+      const n0 = room.designs.filter((d) => d.style === req.style).length;
+      const job: RestyleJob = { style: STYLE_BY_ID[req.style].name, total: 3, done: 0, startedAt: Date.now(), error: null };
+      setRestyle(job);
+      setCandidates([]);
+      setViewingId(null);
+      setSelected(null);
+      cancelPreview();
+      (async () => {
+        for (let i = 0; i < 3; i++) {
+          try {
+            const d = await aiRestyle({ room, photoUrl, style: req.style, variant: n0 + i, inspirationColors: req.inspirationColors, strength: req.strength, signal: ac.signal });
+            if (ac.signal.aborted) return;
+            setCandidates((c) => [...c, d]);
+            setViewingId((v) => v ?? d.id);
+            setRestyle((j) => (j ? { ...j, done: i + 1, startedAt: Date.now() } : j));
+          } catch (e) {
+            if (ac.signal.aborted || (e as Error).name === 'AbortError') return;
+            setRestyle((j) => (j ? { ...j, error: (e as Error).message } : j));
+            return;
+          }
+        }
+      })();
+      return;
+    }
     const n = room.designs.filter((d) => d.style === req.style).length;
     const list = [0, 1, 2].map((i) => generateDesign(room, req.style, n + i, { inspirationColors: req.inspirationColors, inspirationStrength: req.strength }));
     setCandidates(list);
     setViewingId(list[0].id);
     setSelected(null);
     cancelPreview();
+  };
+
+  const cancelRestyle = () => {
+    restyleAbort.current?.abort();
+    setRestyle(null);
   };
 
   const useCandidate = () => {
@@ -296,11 +432,36 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
   const showPanel = !!panelData && !!selected;
   const styleDef = design.style !== 'original' ? STYLE_BY_ID[design.style] : null;
 
+  const restyleBanner =
+    restyle && (restyle.error || restyle.done < restyle.total) ? (
+      <div className={`banner${restyle.error ? ' banner-error' : ''}`} role="status" onClick={(e) => e.stopPropagation()}>
+        {restyle.error ? (
+          <span>
+            <b>Couldn’t generate {restyle.style} · {restyle.done + 1}.</b> {restyle.error}
+            {restyle.done > 0 ? ` The ${restyle.done} finished version${restyle.done > 1 ? 's are' : ' is'} below.` : ''}
+          </span>
+        ) : (
+          <span className="banner-progress">
+            <span className="spinner" aria-hidden="true" />
+            Generating {restyle.style} version {restyle.done + 1} of {restyle.total}… {Math.max(0, Math.round((now - restyle.startedAt) / 1000))}s
+          </span>
+        )}
+        <span className="grow" />
+        <button className="btn btn-sm" onClick={cancelRestyle}>
+          {restyle.error ? 'Dismiss' : 'Stop'}
+        </button>
+      </div>
+    ) : null;
+
   const banner = viewing ? (
     <div className="banner" onClick={(e) => e.stopPropagation()}>
       <span>
         Previewing <b>{viewing.name}</b> — your current design is unchanged.
         {viewing.inspiration && <span className="muted"> Colours influenced by your images.</span>}
+        {viewing.imageModel && <span className="muted"> Generated image, not a photo of real products.</span>}
+        {viewing.structureScore != null && viewing.structureScore < 0.35 && (
+          <span className="warn-text"> The walls or windows may have shifted in this version — compare it with your photo before using it.</span>
+        )}
       </span>
       <span className="grow" />
       <button className="btn btn-sm" onClick={() => setViewingId(null)}>
@@ -385,7 +546,7 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
           <Canvas
             room={room}
             design={shown}
-            photoUrl={photoUrl}
+            photoUrl={shownImage}
             override={override}
             compare={compare}
             interaction={
@@ -393,10 +554,25 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
                 ? { selectable, hovered, selected, focusable: true, onHover: setHovered, onSelect: select }
                 : null
             }
-            progress={preview?.status === 'generating' ? { category: preview.category, value: preview.progress, onCancel: cancelPreview } : null}
+            progress={
+              preview?.status === 'generating'
+                ? {
+                    category: preview.category,
+                    value: preview.progress,
+                    seconds: Math.max(0, Math.round((now - preview.startedAt) / 1000)),
+                    label: preview.kind === 'ai' ? 'Generating preview' : 'Rendering preview',
+                    onCancel: cancelPreview,
+                  }
+                : null
+            }
             marking={marking}
             onMarked={setPendingMark}
-            banner={banner}
+            banner={
+              <>
+                {restyleBanner}
+                {banner}
+              </>
+            }
           >
             {!preview && !viewing && !compare && !marking && (
               <div className="canvas-hint" aria-live="polite">
@@ -421,6 +597,11 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
                       <button className="btn btn-sm" onClick={cancelPreview}>
                         Dismiss
                       </button>
+                      {preview.kind === 'ai' && isPhoto && (
+                        <button className="btn btn-sm" onClick={() => startPreview(preview.product, preview.variantId, true)}>
+                          Use quick overlay
+                        </button>
+                      )}
                       <button className="btn btn-sm" onClick={() => startPreview(preview.product, preview.variantId)}>
                         Try again
                       </button>
@@ -442,7 +623,12 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
                         <span>Price not listed — the room total can’t be updated.</span>
                       )}
                       <span className="muted small">
-                        {isPhoto ? 'Rough overlay on your photo.' : 'Visualization from listed size, colour and shape.'} Not a guarantee of exact look or fit.
+                        {preview.kind === 'ai'
+                          ? `Generated image (${preview.model.split('/').pop()}) from the product's ${preview.referenceIsPhoto ? 'photo' : 'illustration'} and listed size. Only the area around the ${CATEGORY_LABEL[preview.category].toLowerCase()} changed.`
+                          : isPhoto
+                            ? 'Rough overlay on your photo.'
+                            : 'Visualization from listed size, colour and shape.'}{' '}
+                        Not a guarantee of exact look or fit.
                       </span>
                     </div>
                     <div className="pb-actions">
@@ -468,7 +654,7 @@ export function Workspace({ onHome, onAddRoom }: { onHome: () => void; onAddRoom
                 candidates={candidates}
                 viewingId={viewingId}
                 comparing={!!compareId}
-                canGenerate={!isPhoto}
+                canGenerate={!isPhoto || ai.available}
                 onSelect={(id) => {
                   setViewingId(null);
                   setCompareId(null);
